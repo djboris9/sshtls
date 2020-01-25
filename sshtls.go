@@ -20,36 +20,68 @@ import (
 var _ crypto.Signer = (*SSHSigner)(nil)
 
 type SSHSigner struct {
-	Pubk crypto.PublicKey
+	Pubk  crypto.PublicKey
+	Privk crypto.PrivateKey
 }
 
 func (s *SSHSigner) Public() crypto.PublicKey {
 	log.Println("Public()")
-	//return s.Pubk
-	return &rsa.PublicKey{} // TODO This is dummy
+	return s.Pubk
 }
 
 func (s *SSHSigner) Sign(rand io.Reader, digest []byte, opts crypto.SignerOpts) (signature []byte, err error) {
 	log.Println("Sign()")
-	return nil, nil
+
+	signer, ok := s.Privk.(crypto.Signer)
+	if !ok {
+		return nil, errors.New("private key is not a signer")
+	}
+
+	return signer.Sign(rand, digest, opts)
 }
 
 type Agent struct {
-	// TODO these are dummy vals for testing
 	Cert []byte
 	Key  []byte
 }
 
 func (a *Agent) CertAgent(cri *tls.CertificateRequestInfo) (*tls.Certificate, error) {
 	log.Println("CertAgent() called")
-	/*
-		ret := &tls.Certificate{
-			Certificate: "",
-		}*/
-	//return ret, nil
+
+	// Parse certificate
+	block, _ := pem.Decode(a.Cert)
+	if block == nil {
+		panic("failed to parse certificate PEM")
+	}
+
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		panic("failed to parse certificate: " + err.Error())
+
+	}
+
 	ret, err := Load(a.Cert, a.Key)
+	ret.Certificate = [][]byte{cert.Raw} // TODO: is this valid?
+
+	// Parse private key
+	keyDERBlock, _ := pem.Decode(a.Key)
+	if keyDERBlock.Type != "PRIVATE KEY" && !strings.HasSuffix(keyDERBlock.Type, " PRIVATE KEY") {
+		return nil, errors.New("Cannot load private key")
+	}
+
+	var key crypto.PrivateKey
+	if key, err = x509.ParsePKCS1PrivateKey(keyDERBlock.Bytes); err == nil {
+		log.Println("private key is PKCS1")
+	} else if key, err = x509.ParsePKCS8PrivateKey(keyDERBlock.Bytes); err == nil {
+		log.Println("private key is PKCS8")
+	} else if key, err = x509.ParseECPrivateKey(keyDERBlock.Bytes); err == nil {
+		log.Println("private key is EC")
+	}
+
+	// Return tls.Certificate
 	ret.PrivateKey = &SSHSigner{
-		Pubk: ret.Certificate, // TODO: Continue here, as Public() doesn't return a valid key. Should be *rsa.PublicKey, see tls/auth.go
+		Pubk:  cert.PublicKey,
+		Privk: key,
 	}
 	return &ret, err
 }
